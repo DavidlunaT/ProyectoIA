@@ -1,0 +1,12 @@
+tmp
+bin
+*.exe
+*.test
+vendor
+.git
+.gitignore
+.env
+*.md
+.vscode
+.idea
+*.log

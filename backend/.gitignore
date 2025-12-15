@@ -1,0 +1,33 @@
+# Binarios
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+main
+
+# Test binary
+*.test
+
+# Output
+/tmp
+/bin
+
+# Dependencias
+/vendor
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Air
+tmp/
+
+# Logs
+*.log

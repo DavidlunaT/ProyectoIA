@@ -1,0 +1,99 @@
+# Docker Compose - Sistema de Predicción de Eventos Catastróficos
+# Ejecutar con: docker-compose up --build
+
+services:
+  # ============================================================================
+  # FRONTEND - React + Vite + TailwindCSS
+  # ============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    container_name: disaster-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      # Hot-reload: montar código fuente
+      - ./frontend:/app
+      # Evitar sobrescribir node_modules
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
+    networks:
+      - disaster-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # BACKEND - Go + Gin
+  # ============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: disaster-backend
+    ports:
+      - "8080:8080"
+    volumes:
+      # Hot-reload: montar código fuente
+      - ./backend:/app
+    environment:
+      - PORT=8080
+      - GIN_MODE=debug
+      - AI_SERVICE_URL=http://ai-service:8000
+      # Firebase (dejar vacío o configurar con credenciales reales)
+      - FIREBASE_PROJECT_ID=
+      - FIREBASE_CREDENTIALS_PATH=
+    depends_on:
+      ai-service:
+        condition: service_healthy
+    networks:
+      - disaster-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # AI SERVICE - Python + FastAPI (Mock para futuro modelo)
+  # ============================================================================
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: disaster-ai-service
+    ports:
+      - "8000:8000"
+    volumes:
+      # Hot-reload: montar código fuente
+      - ./ai-service:/app
+      # Directorio para modelos .keras/.h5
+      - ./ai-service/model:/app/model
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MODEL_PATH=/app/model
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - disaster-network
+    restart: unless-stopped
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+networks:
+  disaster-network:
+    driver: bridge
+    name: disaster-prediction-network
+
+# ============================================================================
+# VOLUMES (opcional, para persistencia)
+# ============================================================================
+volumes:
+  model-data:
+    name: disaster-model-data
