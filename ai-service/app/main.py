@@ -30,6 +30,7 @@ MAP_EVENTOS_PATH = os.path.join(BASE_PATH, "map_eventos.pkl")
 model = None
 map_parroquias = {}
 id_to_evento = {}
+ID_OTRA = 0
 
 # Límites para normalización (según entrenamiento)
 LAT_MIN, LAT_MAX = -5.01, 1.44
@@ -45,15 +46,25 @@ async def load_resources():
     print("🚀 Iniciando carga de recursos del sistema...")
 
     # 1. Cargar Mapa de Parroquias
+    # 1. Cargar Mapa de Parroquias
     try:
         if os.path.exists(MAP_PARROQUIAS_PATH):
             with open(MAP_PARROQUIAS_PATH, 'rb') as f:
                 map_parroquias = pickle.load(f)
-            print(f"✅ Mapa de parroquias cargado ({len(map_parroquias)} registros)")
+            
+            # --- LÓGICA NUEVA PARA DETECTAR EL ID 'OTRA' ---
+            if "OTRA" in map_parroquias:
+                ID_OTRA = map_parroquias["OTRA"]
+                print(f" Mapa de parroquias cargado. ID para desconocidos (OTRA): {ID_OTRA}")
+            else:
+                # Si por alguna razón no existe, usamos el 0 o el último, pero avisamos
+                print("ADVERTENCIA: La etiqueta 'OTRA' no está en el diccionario. Usando 0 por defecto.")
+                ID_OTRA = 0
+                
         else:
-            print(f"⚠️ ERROR: No se encontró {MAP_PARROQUIAS_PATH}")
+            print(f"ERROR: No se encontró {MAP_PARROQUIAS_PATH}")
     except Exception as e:
-        print(f" Error cargando map_parroquias: {e}")
+        print(f"Error cargando map_parroquias: {e}")
 
     # 2. Cargar Mapa de Eventos
     try:
@@ -119,7 +130,7 @@ class PredictionResponse(BaseModel):
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
-    global model, map_parroquias, id_to_evento
+    global model, map_parroquias, id_to_evento, ID_OTRA
 
     if model is None:
         raise HTTPException(status_code=503, detail="Modelo no disponible")
@@ -130,7 +141,10 @@ async def predict(request: PredictionRequest):
         search_key = normalize_text(request.parroquia if request.parroquia else request.canton)
         
         # Obtener ID del mapa, default 0 si no existe
-        parroquia_id = map_parroquias.get(search_key, 0)
+        parroquia_id = map_parroquias.get(search_key, ID_OTRA)
+
+        if parroquia_id == ID_OTRA and search_key != "OTRA":
+            print(f"ℹ️ Parroquia '{search_key}' no encontrada. Usando comodín ID {ID_OTRA}.")
         
         # Shape: (1,)
         input_parroquia = np.array([parroquia_id]) 
