@@ -1,290 +1,192 @@
-"""
-Sistema de Predicción de Eventos Catastróficos en Ecuador
-AI Service - Servicio de Inteligencia Artificial (Mock)
-
-Este servicio actualmente funciona en modo MOCK, generando valores aleatorios
-que respetan el contrato de datos para facilitar la integración futura.
-"""
-
-import random
-from datetime import datetime
-from typing import Optional
+import os
+import pickle
+import numpy as np
+import tensorflow as tf
+from math import sin, cos, pi
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # ============================================================================
-# CONFIGURACIÓN DE LA APLICACIÓN
+# CONFIGURACIÓN
 # ============================================================================
 
-app = FastAPI(
-    title="AI Service - Predicción de Eventos Catastróficos",
-    description="Servicio de IA para predicción de eventos catastróficos en Ecuador",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
+app = FastAPI(title="AI Service - Production Model")
 
-# Configuración de CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================================================================
-# MODELOS DE DATOS (Contratos)
-# ============================================================================
+# Rutas de archivos
+BASE_PATH = "/app/model"
+MODEL_PATH = os.path.join(BASE_PATH, "modelo_final_riesgos_ecuador.keras")
+MAP_PARROQUIAS_PATH = os.path.join(BASE_PATH, "map_parroquias.pkl")
+MAP_EVENTOS_PATH = os.path.join(BASE_PATH, "map_eventos.pkl")
 
-class PredictionRequest(BaseModel):
-    """Estructura de la petición de predicción"""
-    latitude: float = Field(..., ge=-5.0, le=2.0, description="Latitud en Ecuador")
-    longitude: float = Field(..., ge=-81.0, le=-75.0, description="Longitud en Ecuador")
-    day: int = Field(..., ge=1, le=31, description="Día del mes")
-    month: int = Field(..., ge=1, le=12, description="Mes del año")
-    provincia: str = Field(..., min_length=1, description="Nombre de la provincia")
-    canton: str = Field(..., min_length=1, description="Nombre del cantón")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "latitude": -2.1894,
-                "longitude": -79.8891,
-                "day": 15,
-                "month": 12,
-                "provincia": "Guayas",
-                "canton": "Guayaquil"
-            }
-        }
+# Variables globales
+model = None
+map_parroquias = {}
+id_to_evento = {}
 
-
-class EventProbability(BaseModel):
-    """Probabilidad de un evento específico"""
-    event_type: str = Field(..., description="Tipo de evento catastrófico")
-    probability: float = Field(..., ge=0.0, le=100.0, description="Probabilidad en porcentaje")
-    risk_level: str = Field(..., description="Nivel de riesgo: bajo, medio, alto, crítico")
-
-
-class PredictionResponse(BaseModel):
-    """Estructura de la respuesta de predicción"""
-    success: bool
-    timestamp: str
-    location: dict
-    predictions: list[EventProbability]
-    model_version: str
-    is_mock: bool = Field(default=True, description="Indica si es una respuesta mock")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "timestamp": "2025-12-15T10:30:00",
-                "location": {
-                    "provincia": "Guayas",
-                    "canton": "Guayaquil",
-                    "coordinates": {"lat": -2.1894, "lng": -79.8891}
-                },
-                "predictions": [
-                    {"event_type": "Inundación", "probability": 45.5, "risk_level": "medio"},
-                    {"event_type": "Deslizamiento", "probability": 23.2, "risk_level": "bajo"},
-                    {"event_type": "Incendio", "probability": 12.8, "risk_level": "bajo"},
-                    {"event_type": "Sismo", "probability": 8.5, "risk_level": "bajo"}
-                ],
-                "model_version": "mock-v1.0.0",
-                "is_mock": True
-            }
-        }
-
+# Límites para normalización (según entrenamiento)
+LAT_MIN, LAT_MAX = -5.01, 1.44
+LON_MIN, LON_MAX = -81.08, -75.19
 
 # ============================================================================
-# CARGA DEL MODELO DE IA
+# CARGA DE RECURSOS
 # ============================================================================
 
-# AQUÍ SE CARGARÁ EL MODELO .KERAS EN EL FUTURO Y SE REEMPLAZARÁ ESTA LÓGICA MOCK
-# 
-# Ejemplo de carga futura:
-# 
-# import tensorflow as tf
-# from tensorflow import keras
-# import numpy as np
-# 
-# MODEL_PATH = "/app/model/disaster_prediction_model.keras"
-# model = None
-# 
-# @app.on_event("startup")
-# async def load_model():
-#     global model
-#     try:
-#         model = keras.models.load_model(MODEL_PATH)
-#         print(f"✅ Modelo cargado exitosamente desde {MODEL_PATH}")
-#     except Exception as e:
-#         print(f"⚠️ Error cargando modelo: {e}")
-#         print("Continuando en modo MOCK...")
+@app.on_event("startup")
+async def load_resources():
+    global model, map_parroquias, id_to_evento
+    print("🚀 Iniciando carga de recursos del sistema...")
 
-MODEL_LOADED = False  # Cambiar a True cuando el modelo real esté disponible
+    # 1. Cargar Mapa de Parroquias
+    try:
+        if os.path.exists(MAP_PARROQUIAS_PATH):
+            with open(MAP_PARROQUIAS_PATH, 'rb') as f:
+                map_parroquias = pickle.load(f)
+            print(f"✅ Mapa de parroquias cargado ({len(map_parroquias)} registros)")
+        else:
+            print(f"⚠️ ERROR: No se encontró {MAP_PARROQUIAS_PATH}")
+    except Exception as e:
+        print(f" Error cargando map_parroquias: {e}")
 
+    # 2. Cargar Mapa de Eventos
+    try:
+        if os.path.exists(MAP_EVENTOS_PATH):
+            with open(MAP_EVENTOS_PATH, 'rb') as f:
+                evento_to_id = pickle.load(f)
+            # Invertir diccionario (Nombre -> ID) a (ID -> Nombre) para la respuesta
+            id_to_evento = {v: k for k, v in evento_to_id.items()}
+            print(f"Mapa de eventos cargado y procesado ({len(id_to_evento)} tipos)")
+        else:
+            print(f" ERROR: No se encontró {MAP_EVENTOS_PATH}")
+    except Exception as e:
+        print(f" Error cargando map_eventos: {e}")
+
+    # 3. Cargar Modelo Keras
+    try:
+        if os.path.exists(MODEL_PATH):
+            model = tf.keras.models.load_model(MODEL_PATH)
+            print(" Modelo .keras cargado exitosamente")
+        else:
+            print(f" ERROR: No se encontró modelo en {MODEL_PATH}")
+    except Exception as e:
+        print(f" Error cargando modelo: {e}")
 
 # ============================================================================
-# FUNCIONES AUXILIARES
+# LÓGICA DE PREPROCESAMIENTO
 # ============================================================================
 
-def get_risk_level(probability: float) -> str:
-    """Determina el nivel de riesgo basado en la probabilidad"""
-    if probability >= 75:
-        return "crítico"
-    elif probability >= 50:
-        return "alto"
-    elif probability >= 25:
-        return "medio"
-    else:
-        return "bajo"
+def get_risk_level(prob):
+    if prob >= 75: return "crítico"
+    if prob >= 50: return "alto"
+    if prob >= 25: return "medio"
+    return "bajo"
 
-
-def generate_mock_predictions(request: PredictionRequest) -> list[EventProbability]:
-    """
-    Genera predicciones mock aleatorias.
-    
-    AQUÍ SE REEMPLAZARÁ CON LA LÓGICA REAL DEL MODELO .KERAS EN EL FUTURO
-    
-    Futuro código:
-    
-    def generate_real_predictions(request: PredictionRequest) -> list[EventProbability]:
-        # Preparar features para el modelo
-        features = np.array([[
-            request.latitude,
-            request.longitude,
-            request.month,
-            # ... otros features procesados
-        ]])
-        
-        # Ejecutar predicción
-        raw_predictions = model.predict(features)
-        
-        # Procesar salida del modelo
-        event_types = ["Inundación", "Deslizamiento", "Incendio", "Sismo"]
-        predictions = []
-        for i, event_type in enumerate(event_types):
-            prob = float(raw_predictions[0][i]) * 100
-            predictions.append(EventProbability(
-                event_type=event_type,
-                probability=round(prob, 2),
-                risk_level=get_risk_level(prob)
-            ))
-        
-        return predictions
-    """
-    
-    event_types = ["Inundación", "Deslizamiento", "Incendio", "Sismo"]
-    predictions = []
-    
-    # Generar probabilidades aleatorias pero realistas
-    # Usar semilla basada en ubicación para resultados consistentes por ubicación
-    seed = hash(f"{request.provincia}{request.canton}{request.month}")
-    random.seed(seed)
-    
-    for event_type in event_types:
-        # Probabilidades ponderadas según el tipo de evento y temporada
-        base_prob = random.uniform(5, 85)
-        
-        # Ajustes por temporada (simplificado)
-        if event_type == "Inundación" and request.month in [1, 2, 3, 4]:
-            base_prob *= 1.3  # Más probable en época lluviosa
-        elif event_type == "Incendio" and request.month in [7, 8, 9, 10]:
-            base_prob *= 1.3  # Más probable en época seca
-        
-        probability = min(round(base_prob, 2), 100.0)
-        
-        predictions.append(EventProbability(
-            event_type=event_type,
-            probability=probability,
-            risk_level=get_risk_level(probability)
-        ))
-    
-    # Resetear la semilla para otros usos aleatorios
-    random.seed()
-    
-    return predictions
-
+def normalize_text(text):
+    """Normaliza texto para coincidir con las llaves del mapa (mayúsculas)"""
+    return text.upper().strip() if text else ""
 
 # ============================================================================
 # ENDPOINTS
 # ============================================================================
 
-@app.get("/health")
-async def health_check():
-    """Endpoint de health check"""
-    return {
-        "status": "healthy",
-        "service": "ai-service",
-        "model_loaded": MODEL_LOADED,
-        "mode": "mock" if not MODEL_LOADED else "production",
-        "timestamp": datetime.now().isoformat()
-    }
+class PredictionRequest(BaseModel):
+    latitude: float
+    longitude: float
+    day: int
+    month: int
+    provincia: str
+    canton: str
+    parroquia: str = None 
 
+class EventProbability(BaseModel):
+    event_type: str
+    probability: float
+    risk_level: str
+
+class PredictionResponse(BaseModel):
+    success: bool
+    predictions: list[EventProbability]
+    model_version: str = "v3.0-production"
+
+    model_config = {"protected_namespaces": ()}
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
-    """
-    Genera predicciones de eventos catastróficos para una ubicación y fecha específicas.
-    
-    Actualmente funciona en modo MOCK. Cuando el modelo esté entrenado,
-    esta función utilizará el modelo .keras/.h5 real.
-    """
+    global model, map_parroquias, id_to_evento
+
+    if model is None:
+        raise HTTPException(status_code=503, detail="Modelo no disponible")
+
     try:
-        # AQUÍ SE CARGARÁ EL MODELO .KERAS EN EL FUTURO Y SE REEMPLAZARÁ ESTA LÓGICA MOCK
-        # 
-        # Verificación futura:
-        # if model is None:
-        #     raise HTTPException(status_code=503, detail="Modelo no disponible")
+        # --- PASO 1: PREPARAR ID DE PARROQUIA (Entrada 1) ---
+        # Buscamos por parroquia o usamos el cantón como fallback
+        search_key = normalize_text(request.parroquia if request.parroquia else request.canton)
         
-        # Generar predicciones (mock por ahora)
-        predictions = generate_mock_predictions(request)
+        # Obtener ID del mapa, default 0 si no existe
+        parroquia_id = map_parroquias.get(search_key, 0)
         
-        # Construir respuesta
-        response = PredictionResponse(
-            success=True,
-            timestamp=datetime.now().isoformat(),
-            location={
-                "provincia": request.provincia,
-                "canton": request.canton,
-                "coordinates": {
-                    "lat": request.latitude,
-                    "lng": request.longitude
-                }
-            },
-            predictions=predictions,
-            model_version="mock-v1.0.0",  # Cambiar a versión real cuando esté el modelo
-            is_mock=True  # Cambiar a False cuando se use el modelo real
-        )
+        # Shape: (1,)
+        input_parroquia = np.array([parroquia_id]) 
+
+        # --- PASO 2: PREPARAR CONTEXTO (Entrada 2) ---
+        # Normalización manual de coordenadas (MinMax)
+        lat_norm = (request.latitude - LAT_MIN) / (LAT_MAX - LAT_MIN)
+        lon_norm = (request.longitude - LON_MIN) / (LON_MAX - LON_MIN)
         
-        return response
+        # Transformación trigonométrica de fecha
+        d_sin = np.sin(2 * np.pi * request.day / 365.0)
+        d_cos = np.cos(2 * np.pi * request.day / 365.0)
+        m_sin = np.sin(2 * np.pi * request.month / 12.0)
+        m_cos = np.cos(2 * np.pi * request.month / 12.0)
         
+        # Shape: (1, 6) -> [[lat, lon, d_sin, d_cos, m_sin, m_cos]]
+        input_contexto = np.array([[lat_norm, lon_norm, d_sin, d_cos, m_sin, m_cos]])
+
+        print(f" Prediciendo para: {search_key} (ID: {parroquia_id})")
+
+        # --- PASO 3: INFERENCIA ---
+        # El modelo espera una lista: [input_parroquia, input_contexto]
+        predictions_raw = model.predict([input_parroquia, input_contexto])
+        
+        # --- PASO 4: FORMATEAR RESPUESTA ---
+        results = []
+        probs_vector = predictions_raw[0] # Primera fila
+
+        for idx, prob in enumerate(probs_vector):
+            # Obtener nombre del evento usando el ID invertido
+            event_name = id_to_evento.get(idx, f"Evento_{idx}")
+            
+            # Ignorar clase 'NINGUNO' si se desea filtrar, o mostrarla
+            if event_name == "NINGUNO":
+                continue 
+
+            p_val = float(prob) * 100 # Convertir 0.12 -> 12.0
+            
+            results.append(EventProbability(
+                event_type=event_name,
+                probability=round(p_val, 2),
+                risk_level=get_risk_level(p_val)
+            ))
+
+        # Ordenar de mayor a menor probabilidad
+        results.sort(key=lambda x: x.probability, reverse=True)
+
+        # Devolver top 5 para no saturar el frontend
+        return PredictionResponse(success=True, predictions=results[:5])
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en predicción: {str(e)}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/")
-async def root():
-    """Endpoint raíz con información del servicio"""
-    return {
-        "service": "AI Service - Predicción de Eventos Catastróficos",
-        "version": "1.0.0",
-        "status": "running",
-        "mode": "mock" if not MODEL_LOADED else "production",
-        "endpoints": {
-            "predict": "POST /predict",
-            "health": "GET /health",
-            "docs": "GET /docs"
-        }
-    }
-
-
-# ============================================================================
-# EJECUCIÓN LOCAL (para desarrollo sin Docker)
-# ============================================================================
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": model is not None}
