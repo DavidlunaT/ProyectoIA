@@ -3143,12 +3143,6 @@
         "lon": -79.9339983,
         "es_estimado": false
     },
-    "90150": {
-        "nombre": "GUAYAQUIL",
-        "lat": -2.1900572,
-        "lon": -79.8868669,
-        "es_estimado": false
-    },
     "90151": {
         "nombre": "CHONGÓN",
         "lat": -2.2362426,
@@ -3165,18 +3159,6 @@
         "nombre": "MORRO",
         "lat": -2.5635369,
         "lon": -80.3276084,
-        "es_estimado": false
-    },
-    "90154": {
-        "nombre": "PASCUALES",
-        "lat": -2.0695178,
-        "lon": -79.9339983,
-        "es_estimado": false
-    },
-    "90155": {
-        "nombre": "PLAYAS (GRAL. VILLAMIL)",
-        "lat": -2.6274022,
-        "lon": -80.3202352,
         "es_estimado": false
     },
     "90156": {
