@@ -3,36 +3,41 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 import { 
-  MapPin, Calendar, AlertTriangle, ArrowLeft, Activity, Shield, ChevronDown, CheckCircle2, X
+  MapPin, Calendar, ArrowLeft, Shield, ChevronDown, CheckCircle2
 } from 'lucide-react';
-import { months, getParroquias } from '../data/provincias';
+import { months } from '../data/provincias';
 
 const Dashboard = ({ data, query, onReset }) => {
-  // Estado para parroquias seleccionadas
   const [selectedParroquias, setSelectedParroquias] = useState([]);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
-  // Obtener la lista de parroquias DISPONIBLES EN LA RESPUESTA DEL BACKEND
-  // data.parroquias_data es el mapa que devuelve el nuevo backend
   const availableParroquias = useMemo(() => {
     return data?.parroquias_data ? Object.keys(data.parroquias_data).sort() : [];
   }, [data]);
 
-  // Colores según riesgo
-  const getRiskColor = (level) => {
-    switch(level?.toLowerCase()) {
-      case 'crítico': return 'text-red-600 bg-red-100 border-red-300';
-      case 'alto': return 'text-orange-600 bg-orange-100 border-orange-300';
-      case 'medio': return 'text-yellow-600 bg-yellow-100 border-yellow-300';
-      default: return 'text-green-600 bg-green-100 border-green-300';
-    }
+  // --- 1. LÓGICA DE COLOR DE CABECERA (Header) ---
+  const getHeaderColorClass = (level) => {
+    const safeLevel = level?.toLowerCase() || '';
+    if (safeLevel === 'crítico' || safeLevel === 'extremo') return 'bg-red-500';
+    if (safeLevel === 'alto') return 'bg-orange-500';
+    if (safeLevel === 'medio') return 'bg-yellow-500';
+    return 'bg-green-600'; // Bajo o Ninguno = Verde Oscuro
   };
 
-  const getBarColor = (prob) => {
-    if (prob >= 75) return '#ef4444'; 
-    if (prob >= 50) return '#f97316'; 
-    if (prob >= 25) return '#eab308'; 
-    return '#22c55e'; 
+  // --- 2. LÓGICA DE COLOR DE BARRAS (Chart) ---
+  const getBarColor = (prob, eventName) => {
+    // CASO A: Es "NINGUNO" (Calma)
+    // Si la probabilidad de "NINGUNO" es alta, es BUENO -> Verde
+    if (eventName === 'NINGUNO') {
+      return '#16a34a'; // green-600 (Siempre verde si es Ninguno)
+    }
+
+    // CASO B: Es un DESASTRE (Incendio, Inundación, etc.)
+    // Si la probabilidad es alta, es PELIGROSO -> Rojo
+    if (prob >= 75) return '#ef4444'; // Rojo
+    if (prob >= 50) return '#f97316'; // Naranja
+    if (prob >= 25) return '#eab308'; // Amarillo
+    return '#22c55e'; // Verde (Poca probabilidad de desastre)
   };
 
   const toggleParroquia = (p) => {
@@ -43,7 +48,7 @@ const Dashboard = ({ data, query, onReset }) => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
-      {/* Header */}
+      {/* Header General */}
       <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-700 rounded-2xl shadow-2xl p-8 text-white">
         <div className="flex justify-between items-center mb-4">
           <button onClick={onReset} className="flex items-center space-x-2 bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg">
@@ -65,10 +70,9 @@ const Dashboard = ({ data, query, onReset }) => {
         </div>
       </div>
 
-      {/* Selector de Parroquias */}
+      {/* Dropdown Selector */}
       <div className="bg-white rounded-2xl shadow-xl p-6 relative">
         <h2 className="text-lg font-bold mb-4 text-gray-700">Seleccionar Parroquias a Visualizar</h2>
-        
         <div 
           onClick={() => setIsDropdownOpen(!isDropdownOpen)}
           className="w-full p-3 border rounded-lg cursor-pointer flex justify-between items-center hover:border-blue-400"
@@ -101,7 +105,7 @@ const Dashboard = ({ data, query, onReset }) => {
         )}
       </div>
 
-      {/* Grid de Resultados */}
+      {/* Tarjetas de Resultados */}
       <div className="grid md:grid-cols-1 gap-6">
         {selectedParroquias.length === 0 && (
           <div className="text-center py-12 text-gray-400 bg-white rounded-2xl shadow">
@@ -110,18 +114,19 @@ const Dashboard = ({ data, query, onReset }) => {
         )}
 
         {selectedParroquias.map(parroquiaName => {
-          // Extraer DATOS REALES del backend para esta parroquia
           const pData = data.parroquias_data[parroquiaName];
           if (!pData) return null;
 
+          // Convertir a porcentajes (0-100)
+          const chartData = pData.predictions.map(pred => ({
+            ...pred,
+            probability: parseFloat((pred.probability * 100).toFixed(1))
+          }));
+
           return (
             <div key={parroquiaName} className="bg-white rounded-2xl shadow-lg overflow-hidden border border-gray-100">
-              {/* Encabezado de la tarjeta */}
-              <div className={`p-4 flex justify-between items-center text-white ${
-                pData.max_risk === 'crítico' ? 'bg-red-500' :
-                pData.max_risk === 'alto' ? 'bg-orange-500' :
-                pData.max_risk === 'medio' ? 'bg-yellow-500' : 'bg-green-500'
-              }`}>
+              {/* Encabezado: Color basado en el Riesgo Global */}
+              <div className={`p-4 flex justify-between items-center text-white ${getHeaderColorClass(pData.max_risk)}`}>
                 <div className="flex items-center gap-3">
                   <Shield className="w-6 h-6" />
                   <span className="font-bold text-lg">{parroquiaName}</span>
@@ -131,18 +136,23 @@ const Dashboard = ({ data, query, onReset }) => {
                 </div>
               </div>
 
-              {/* Contenido del gráfico */}
+              {/* Gráfico */}
               <div className="p-6">
                 <div className="h-64 w-full">
                   <ResponsiveContainer>
-                    <BarChart data={pData.predictions} layout="vertical" margin={{left: 20, right: 20}}>
+                    <BarChart data={chartData} layout="vertical" margin={{left: 20, right: 20}}>
                       <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} />
                       <XAxis type="number" domain={[0, 100]} hide />
                       <YAxis type="category" dataKey="event_type" width={140} tick={{fontSize: 11}} />
                       <Tooltip formatter={(val) => [`${val}%`, 'Probabilidad']} />
+                      
+                      {/* BARRAS: Color inteligente según si es Ninguno o Desastre */}
                       <Bar dataKey="probability" radius={[0, 4, 4, 0]}>
-                        {pData.predictions.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={getBarColor(entry.probability)} />
+                        {chartData.map((entry, index) => (
+                          <Cell 
+                            key={`cell-${index}`} 
+                            fill={getBarColor(entry.probability, entry.event_type)} 
+                          />
                         ))}
                       </Bar>
                     </BarChart>
