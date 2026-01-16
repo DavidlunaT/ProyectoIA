@@ -10,7 +10,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: development
-    container_name: disaster-frontend
+    container_name: disaster-frontend-dev
     ports:
       - "3000:3000"
     volumes:
@@ -35,7 +35,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       target: development
-    container_name: disaster-backend
+    container_name: disaster-backend-dev
     ports:
       - "8080:8080"
     volumes:
@@ -62,7 +62,7 @@ services:
     build:
       context: ./ai-service
       dockerfile: Dockerfile
-    container_name: disaster-ai-service
+    container_name: disaster-ai-service-dev
     ports:
       - "8000:8000"
     volumes:

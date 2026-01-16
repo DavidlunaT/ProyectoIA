@@ -31,7 +31,6 @@ model = None
 map_parroquias = {}
 id_to_evento = {}
 ID_OTRA = 0
-is_loading = True # Flag para saber si seguimos cargando
 
 # Límites para normalización (según entrenamiento)
 LAT_MIN, LAT_MAX = -5.01, 1.44
@@ -42,23 +41,26 @@ LON_MIN, LON_MAX = -81.08, -75.19
 # ============================================================================
 
 @app.on_event("startup")
-def load_resources():
-    """Carga síncrona de recursos al iniciar la app"""
-    global model, map_parroquias, id_to_evento, ID_OTRA, is_loading
-    print("🚀 Iniciando carga de recursos del sistema (Modo Síncrono)...")
+async def load_resources():
+    global model, map_parroquias, id_to_evento
+    print("🚀 Iniciando carga de recursos del sistema...")
 
+    # 1. Cargar Mapa de Parroquias
     # 1. Cargar Mapa de Parroquias
     try:
         if os.path.exists(MAP_PARROQUIAS_PATH):
             with open(MAP_PARROQUIAS_PATH, 'rb') as f:
                 map_parroquias = pickle.load(f)
             
+            # --- LÓGICA NUEVA PARA DETECTAR EL ID 'OTRA' ---
             if "OTRA" in map_parroquias:
                 ID_OTRA = map_parroquias["OTRA"]
-                print(f"Mapa de parroquias cargado. ID OTRA: {ID_OTRA}")
+                print(f" Mapa de parroquias cargado. ID para desconocidos (OTRA): {ID_OTRA}")
             else:
-                print("ADVERTENCIA: La etiqueta 'OTRA' no está. Usando 0.")
+                # Si por alguna razón no existe, usamos el 0 o el último, pero avisamos
+                print("ADVERTENCIA: La etiqueta 'OTRA' no está en el diccionario. Usando 0 por defecto.")
                 ID_OTRA = 0
+                
         else:
             print(f"ERROR: No se encontró {MAP_PARROQUIAS_PATH}")
     except Exception as e:
@@ -69,40 +71,26 @@ def load_resources():
         if os.path.exists(MAP_EVENTOS_PATH):
             with open(MAP_EVENTOS_PATH, 'rb') as f:
                 evento_to_id = pickle.load(f)
+            # Invertir diccionario (Nombre -> ID) a (ID -> Nombre) para la respuesta
             id_to_evento = {v: k for k, v in evento_to_id.items()}
-            print(f"Mapa de eventos cargado ({len(id_to_evento)} tipos)")
+            print(f"Mapa de eventos cargado y procesado ({len(id_to_evento)} tipos)")
         else:
-            print(f"ERROR: No se encontró {MAP_EVENTOS_PATH}")
+            print(f" ERROR: No se encontró {MAP_EVENTOS_PATH}")
     except Exception as e:
-        print(f"Error cargando map_eventos: {e}")
+        print(f" Error cargando map_eventos: {e}")
 
     # 3. Cargar Modelo Keras
     try:
         if os.path.exists(MODEL_PATH):
-            # Optimización: Cargar solo para inferencia (compile=False es más rápido)
-            model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-            print("Modelo .keras cargado exitosamente")
+            model = tf.keras.models.load_model(MODEL_PATH)
+            print(" Modelo .keras cargado exitosamente")
         else:
-            print(f"ERROR: No se encontró modelo en {MODEL_PATH}")
+            print(f" ERROR: No se encontró modelo en {MODEL_PATH}")
     except Exception as e:
-        print(f"Error cargando modelo: {e}")
-    
-    is_loading = False
-    print("🏁 Carga de recursos finalizada.")
+        print(f" Error cargando modelo: {e}")
 
 # ============================================================================
-# ENDPOINTS DE CONTROL Y SALUD
-# ============================================================================
-
-@app.get("/health")
-def health():
-    """Responde rápido para que Docker sepa que el servidor web está vivo"""
-    if is_loading:
-        return {"status": "loading", "ready": False}
-    return {"status": "ok", "ready": model is not None}
-
-# ============================================================================
-# LÓGICA DE PREDICCIÓN (Igual que antes)
+# LÓGICA DE PREPROCESAMIENTO
 # ============================================================================
 
 def get_risk_level(prob):
@@ -112,7 +100,12 @@ def get_risk_level(prob):
     return "bajo"
 
 def normalize_text(text):
+    """Normaliza texto para coincidir con las llaves del mapa (mayúsculas)"""
     return text.upper().strip() if text else ""
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
 
 class PredictionRequest(BaseModel):
     latitude: float
@@ -132,54 +125,82 @@ class PredictionResponse(BaseModel):
     success: bool
     predictions: list[EventProbability]
     model_version: str = "v3.0-production"
+
     model_config = {"protected_namespaces": ()}
 
 @app.post("/predict", response_model=PredictionResponse)
-def predict(request: PredictionRequest):
-    # Validar disponibilidad
+async def predict(request: PredictionRequest):
+    global model, map_parroquias, id_to_evento, ID_OTRA
+
     if model is None:
-        if is_loading:
-            raise HTTPException(status_code=503, detail="El modelo se está cargando, intente en unos segundos")
-        raise HTTPException(status_code=500, detail="Modelo no disponible (error de carga)")
+        raise HTTPException(status_code=503, detail="Modelo no disponible")
 
     try:
+        # --- PASO 1: PREPARAR ID DE PARROQUIA (Entrada 1) ---
+        # Buscamos por parroquia o usamos el cantón como fallback
         search_key = normalize_text(request.parroquia if request.parroquia else request.canton)
+        
+        # Obtener ID del mapa, default 0 si no existe
         parroquia_id = map_parroquias.get(search_key, ID_OTRA)
 
         if parroquia_id == ID_OTRA and search_key != "OTRA":
-            print(f"ℹ️ Parroquia '{search_key}' no encontrada -> ID {ID_OTRA}.")
+            print(f"ℹ️ Parroquia '{search_key}' no encontrada. Usando comodín ID {ID_OTRA}.")
         
+        # Shape: (1,)
         input_parroquia = np.array([parroquia_id]) 
 
+        # --- PASO 2: PREPARAR CONTEXTO (Entrada 2) ---
+        # Normalización manual de coordenadas (MinMax)
         lat_norm = (request.latitude - LAT_MIN) / (LAT_MAX - LAT_MIN)
         lon_norm = (request.longitude - LON_MIN) / (LON_MAX - LON_MIN)
+        
+        # Transformación trigonométrica de fecha
         d_sin = np.sin(2 * np.pi * request.day / 365.0)
         d_cos = np.cos(2 * np.pi * request.day / 365.0)
         m_sin = np.sin(2 * np.pi * request.month / 12.0)
         m_cos = np.cos(2 * np.pi * request.month / 12.0)
         
+        # Shape: (1, 6) -> [[lat, lon, d_sin, d_cos, m_sin, m_cos]]
         input_contexto = np.array([[lat_norm, lon_norm, d_sin, d_cos, m_sin, m_cos]])
 
-        # Inferencia
-        predictions_raw = model.predict([input_parroquia, input_contexto], verbose=0) # verbose=0 silencia logs
+        print(f" Prediciendo para: {search_key} (ID: {parroquia_id})")
+
+        # --- PASO 3: INFERENCIA ---
+        # El modelo espera una lista: [input_parroquia, input_contexto]
+        predictions_raw = model.predict([input_parroquia, input_contexto])
         
+        # --- PASO 4: FORMATEAR RESPUESTA ---
         results = []
-        probs_vector = predictions_raw[0]
+        probs_vector = predictions_raw[0] # Primera fila
 
         for idx, prob in enumerate(probs_vector):
+            # Obtener nombre del evento usando el ID invertido
             event_name = id_to_evento.get(idx, f"Evento_{idx}")
-            if event_name == "NINGUNO": continue 
+            
+            # Ignorar clase 'NINGUNO' si se desea filtrar, o mostrarla
+            if event_name == "NINGUNO":
+                continue 
 
-            p_val = float(prob) * 100
+            p_val = float(prob) * 100 # Convertir 0.12 -> 12.0
+            
             results.append(EventProbability(
                 event_type=event_name,
                 probability=round(p_val, 2),
                 risk_level=get_risk_level(p_val)
             ))
 
+        # Ordenar de mayor a menor probabilidad
         results.sort(key=lambda x: x.probability, reverse=True)
+
+        # Devolver top 5 para no saturar el frontend
         return PredictionResponse(success=True, predictions=results[:5])
 
     except Exception as e:
-        print(f"Error predicción: {e}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": model is not None}

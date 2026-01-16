@@ -32,7 +32,7 @@ import (
 // ============================================================================
 
 var (
-	aiServiceURL = getEnv("AI_SERVICE_URL", "https://proyectoia-ai.onrender.com")
+	aiServiceURL = getEnv("AI_SERVICE_URL", "http://ai-service:8000")
 	port         = getEnv("PORT", "8080")
 	// Mapa global: Provincia (NORMALIZADA) -> Canton (NORMALIZADA) -> Lista de Parroquias
 	// Usamos claves normalizadas (MAYUSCULAS SIN TILDES) para buscar, pero guardamos nombres reales
@@ -300,7 +300,7 @@ func PredictHandler(c *gin.Context) {
 
 func callAIService(req AIServiceRequest) (*AIServiceResponse, error) {
 	jsonData, _ := json.Marshal(req)
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second} // Timeout para no colgarse
 	
 	resp, err := client.Post(
 		fmt.Sprintf("%s/predict", aiServiceURL),
@@ -346,15 +346,7 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
-
-    // --- CAMBIO INICIO: CONFIGURACIÓN CORS ---
-    // Reemplaza r.Use(cors.Default()) por esto:
-    config := cors.DefaultConfig()
-    config.AllowAllOrigins = true // Permite que cualquier dominio (tu frontend) se conecte
-    config.AllowMethods = []string{"GET", "POST", "OPTIONS"}
-    config.AllowHeaders = []string{"Origin", "Content-Type", "Accept"}
-    r.Use(cors.New(config))
-    // --- CAMBIO FIN ---
+	r.Use(cors.Default())
 	
 	r.GET("/api/health", HealthHandler)
 	r.GET("/api/provincias", GetProvinciasHandler)

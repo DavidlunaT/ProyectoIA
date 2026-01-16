@@ -79,9 +79,6 @@ RUN apk --no-cache add ca-certificates curl
 # Copiar binario desde builder
 COPY --from=builder /app/main .
 
-# Copiar datos necesarios
-COPY --from=builder /app/data ./data
-
 # Exponer puerto
 EXPOSE 8080
 
